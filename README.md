@@ -24,7 +24,19 @@ python3 app.py --db ./data.db --port 8305
 
 ## 核心对象
 
-- `observation`：现场观察；`sample`：样本与实验室结果；`cluster`：异常聚集事件。
+- `observation`：现场观察；`sample`：样本与实验室结果；`cluster`：异常聚集事件；`receipt`：实验室回执。
+
+## 回执对账
+
+实验室回执（`receipt`）携带 `lab_id`、`batch_code`、`sample_code`、`result`、`result_at`，按 `batch_code + sample_code` 去重。对账规则：
+
+- **匹配**：样本在中心台账且已送检至回执实验室 → 应用结论到样本，并重算引用该样本的聚集事件成员。
+- **挂起**：样本编号对不上（或样本尚未送检、结论冲突）→ 回执置为 `suspended`，**不改样本状态**，待人工处理。
+- **拒绝**：样本送检实验室与回执实验室不一致（越权）→ 回执直接置为 `rejected`。
+- **待重试**：应用结论时入库失败 → 回执置为 `failed` 并累计 `retry_count`，样本状态不动；可重试。
+- **离线合并**：断网时以 `offline`（或 `X-Offline: true`）创建的回执先留本地（`synced: false`），联网后合并回中心再对账。
+
+样本结论一旦变更，引用它的聚集事件即置为 `invalid` 并重算成员（`members`），需重新确认（`confirm_cluster` 允许从 `invalid` 回到 `confirmed`）。
 
 ## 主要接口
 
@@ -33,6 +45,9 @@ python3 app.py --db ./data.db --port 8305
 - `POST /api/<kind>`：创建对象；请求体为JSON。
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
+- `POST /api/receipts`：创建回执并立即对账（`"offline": true` 可先留本地）。
+- `POST /api/receipts/<id>/actions`：回执动作 `reconcile` / `retry` / `sync`。
+- `POST /api/receipts/merge`：把本地（`synced: false`）回执合并回中心。
 - `GET /api/audit`：读取审计记录。
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。

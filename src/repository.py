@@ -110,6 +110,17 @@ class SQLiteRepository:
             if (entity["id"] == value if field == "id" else entity["data"].get(field) == value)
         ]
 
+    def find_entities_by_fields(self, kind, fields):
+        """Return entities whose id or data fields all equal the given values."""
+        return [
+            entity
+            for entity in self.list_entities(kind=kind)
+            if all(
+                (entity["id"] == value if field == "id" else entity["data"].get(field) == value)
+                for field, value in fields.items()
+            )
+        ]
+
     def update_entity(self, entity_id, expected_version, status, data):
         now = utcnow()
         payload = json.dumps(data, ensure_ascii=False, sort_keys=True)

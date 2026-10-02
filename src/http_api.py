@@ -107,6 +107,24 @@ def create_handler(service, rules, static_dir):
                 parsed = urlparse(self.path)
                 parts = [part for part in parsed.path.split("/") if part]
                 actor = self._actor()
+                if len(parts) == 2 and parts == ["api", "receipts"]:
+                    body = self._body()
+                    offline = bool(body.pop("offline", False)) or self.headers.get("X-Offline") == "true"
+                    idem = self.headers.get("Idempotency-Key")
+                    return self._send(201, service.create_receipt(actor, body, idem, offline))
+                if len(parts) == 3 and parts == ["api", "receipts", "merge"]:
+                    body = self._body()
+                    return self._send(200, service.merge_receipts(actor, body.get("receipt_ids")))
+                if len(parts) == 4 and parts[:2] == ["api", "receipts"] and parts[3] == "actions":
+                    body = self._body()
+                    action = body.pop("action", None)
+                    if action == "retry":
+                        return self._send(200, service.retry_receipt(actor, parts[2]))
+                    if action == "reconcile":
+                        return self._send(200, service.reconcile_receipt(actor, parts[2]))
+                    if action == "sync":
+                        return self._send(200, service.merge_receipts(actor, [parts[2]]))
+                    raise ValidationError("unknown receipt action: " + str(action))
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     body = self._body()
                     action = body.pop("action", None)

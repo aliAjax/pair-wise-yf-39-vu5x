@@ -28,6 +28,15 @@ def _validate_lab_result(actor, entity, data, lookup):
         raise ValidationError("lab result must be positive or negative")
 
 
+def _validate_receipt(actor, data, lookup):
+    result = data.get("result", "")
+    if str(result).lower() not in ("positive", "negative"):
+        raise ValidationError("receipt result must be positive or negative")
+    for field in ("lab_id", "batch_code", "sample_code", "result_at"):
+        if not data.get(field):
+            raise ValidationError("missing required field: " + field)
+
+
 def _haversine_km(lat1, lon1, lat2, lon2):
     from math import asin, cos, radians, sin, sqrt
     dlat = radians(lat2 - lat1)
@@ -51,18 +60,108 @@ def is_cluster(observations, max_days=14, radius_km=10):
     return same_window and close
 
 
-CUSTOM_CREATE = {'observation': _validate_observation, 'sample': _validate_sample}
+def recalc_cluster(cluster, observations, samples_by_observation):
+    """Recompute cluster membership from the latest sample conclusions.
+
+    Returns (still_a_cluster, members). ``members`` lists every observation in
+    the cluster together with its most recent sample result (or ``None``).
+    """
+    obs_ids = cluster["data"].get("observation_ids", [])
+    obs_by_id = {item["id"]: item for item in observations}
+    points = []
+    members = []
+    for oid in obs_ids:
+        obs = obs_by_id.get(oid)
+        if not obs:
+            members.append({"observation_id": oid, "result": None, "missing": True})
+            continue
+        result = None
+        for sample in samples_by_observation.get(oid, []):
+            value = sample["data"].get("result")
+            if value is not None:
+                result = value
+        points.append(
+            {
+                "id": oid,
+                "observed_at": obs["data"].get("observed_at"),
+                "lat": obs["data"].get("lat"),
+                "lon": obs["data"].get("lon"),
+            }
+        )
+        members.append({"observation_id": oid, "result": result})
+    return is_cluster(points), members
+
+
+CUSTOM_CREATE = {
+    'observation': _validate_observation,
+    'sample': _validate_sample,
+    'receipt': _validate_receipt,
+}
 CUSTOM_TRANSITIONS = {('sample', 'lab_result'): _validate_lab_result}
 
 
 class RuleEngine:
-    ALIASES = {'observations': 'observation', 'samples': 'sample', 'clusters': 'cluster'}
-    INITIAL_STATUS = {'observation': 'captured', 'sample': 'collected', 'cluster': 'draft'}
-    TRANSITIONS = {'observation': {'submit': (('captured',), 'submitted'), 'reject': (('submitted',), 'rejected'), 'link_sample': (('submitted',), 'sampled')}, 'sample': {'send_lab': (('collected',), 'in_lab'), 'lab_result': (('in_lab',), 'resulted'), 'retest': (('resulted',), 'in_lab'), 'close': (('resulted',), 'closed')}, 'cluster': {'confirm_cluster': (('draft',), 'confirmed'), 'dismiss': (('draft',), 'dismissed')}}
-    CREATE_REQUIRED = {'observation': ('event_id', 'species', 'location', 'observed_at', 'lat', 'lon'), 'sample': ('observation_id', 'sample_code'), 'cluster': ('region',)}
-    ACTION_REQUIRED = {('observation', 'submit'): ('location', 'observed_at'), ('observation', 'reject'): ('reason',), ('observation', 'link_sample'): ('sample_id',), ('sample', 'send_lab'): ('lab_id',), ('sample', 'lab_result'): ('result', 'result_at'), ('sample', 'retest'): ('reason',), ('sample', 'close'): ('outcome',), ('cluster', 'confirm_cluster'): ('observation_ids', 'centroid'), ('cluster', 'dismiss'): ('reason',)}
-    CREATE_ROLES = {'observation': ('admin', 'field'), 'sample': ('admin', 'field'), 'cluster': ('admin', 'epidemiologist')}
-    ROLE_ACTIONS = {'submit': ('admin', 'field'), 'reject': ('admin', 'epidemiologist'), 'link_sample': ('admin', 'field'), 'send_lab': ('admin', 'field'), 'lab_result': ('admin', 'lab'), 'retest': ('admin', 'lab'), 'close': ('admin', 'epidemiologist'), 'confirm_cluster': ('admin', 'epidemiologist'), 'dismiss': ('admin', 'epidemiologist')}
+    ALIASES = {'observations': 'observation', 'samples': 'sample', 'clusters': 'cluster', 'receipts': 'receipt'}
+    INITIAL_STATUS = {'observation': 'captured', 'sample': 'collected', 'cluster': 'draft', 'receipt': 'received'}
+    TRANSITIONS = {
+        'observation': {
+            'submit': (('captured',), 'submitted'),
+            'reject': (('submitted',), 'rejected'),
+            'link_sample': (('submitted',), 'sampled'),
+        },
+        'sample': {
+            'send_lab': (('collected',), 'in_lab'),
+            'lab_result': (('in_lab',), 'resulted'),
+            'retest': (('resulted',), 'in_lab'),
+            'close': (('resulted',), 'closed'),
+        },
+        'cluster': {
+            'confirm_cluster': (('draft', 'invalid'), 'confirmed'),
+            'dismiss': (('draft', 'invalid'), 'dismissed'),
+        },
+        'receipt': {
+            'reconcile': (('received', 'failed'), 'matched'),
+            'retry': (('failed',), 'received'),
+            'sync': (('received', 'failed'), 'synced'),
+        },
+    }
+    CREATE_REQUIRED = {
+        'observation': ('event_id', 'species', 'location', 'observed_at', 'lat', 'lon'),
+        'sample': ('observation_id', 'sample_code'),
+        'cluster': ('region',),
+        'receipt': ('lab_id', 'batch_code', 'sample_code', 'result', 'result_at'),
+    }
+    ACTION_REQUIRED = {
+        ('observation', 'submit'): ('location', 'observed_at'),
+        ('observation', 'reject'): ('reason',),
+        ('observation', 'link_sample'): ('sample_id',),
+        ('sample', 'send_lab'): ('lab_id',),
+        ('sample', 'lab_result'): ('result', 'result_at'),
+        ('sample', 'retest'): ('reason',),
+        ('sample', 'close'): ('outcome',),
+        ('cluster', 'confirm_cluster'): ('observation_ids', 'centroid'),
+        ('cluster', 'dismiss'): ('reason',),
+    }
+    CREATE_ROLES = {
+        'observation': ('admin', 'field'),
+        'sample': ('admin', 'field'),
+        'cluster': ('admin', 'epidemiologist'),
+        'receipt': ('admin', 'lab'),
+    }
+    ROLE_ACTIONS = {
+        'submit': ('admin', 'field'),
+        'reject': ('admin', 'epidemiologist'),
+        'link_sample': ('admin', 'field'),
+        'send_lab': ('admin', 'field'),
+        'lab_result': ('admin', 'lab'),
+        'retest': ('admin', 'lab'),
+        'close': ('admin', 'epidemiologist'),
+        'confirm_cluster': ('admin', 'epidemiologist'),
+        'dismiss': ('admin', 'epidemiologist'),
+        ('receipt', 'reconcile'): ('admin', 'lab'),
+        ('receipt', 'retry'): ('admin', 'lab'),
+        ('receipt', 'sync'): ('admin', 'lab'),
+    }
 
     def normalize_kind(self, kind):
         return self.ALIASES.get(kind, kind)
@@ -77,6 +176,10 @@ class RuleEngine:
     def _ensure_role(actor, allowed):
         if "*" not in allowed and actor.role not in allowed:
             raise PermissionDenied("role %s is not allowed here" % actor.role)
+
+    def ensure_role(self, actor, allowed):
+        """Public wrapper for role checks in use-case services."""
+        self._ensure_role(actor, allowed)
 
     @staticmethod
     def _require(data, fields):
