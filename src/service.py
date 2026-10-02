@@ -10,6 +10,7 @@ class DomainService:
         self.repository = repository
         self.rules = rules or RuleEngine()
         self.audit = AuditTrail(repository)
+        self.sample_result_listeners = []
 
     def _lookup(self, kind, field, value):
         return self.repository.find_entities(self.rules.normalize_kind(kind), field, value)
@@ -56,6 +57,15 @@ class DomainService:
             updated["status"],
             {"patch": patch},
         )
+        if (
+            updated["kind"] == "sample"
+            and action == "lab_result"
+            and entity["data"].get("result")
+            and updated["data"].get("result")
+            and entity["data"]["result"] != updated["data"]["result"]
+        ):
+            for listener in self.sample_result_listeners:
+                listener(updated, actor)
         return updated
 
     def get(self, entity_id):

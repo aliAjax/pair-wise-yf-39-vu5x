@@ -19,7 +19,7 @@ def _json_bytes(payload):
     return json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
 
 
-def create_handler(service, rules, static_dir):
+def create_handler(service, rules, static_dir, reconcile=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "ModularPython/1.0"
 
@@ -85,6 +85,17 @@ def create_handler(service, rules, static_dir):
                         return self._send_html(200, handle.read())
                 if parts == ["api", "audit"]:
                     return self._send(200, {"items": service.audit_log()})
+                if parts == ["api", "receipt-items"]:
+                    if reconcile is None:
+                        raise NotFoundError("not found")
+                    query = parse_qs(parsed.query)
+                    items = reconcile.repository.list_receipt_items(
+                        receipt_id=query.get("receipt_id", [None])[0],
+                        state=query.get("state", [None])[0],
+                        batch_no=query.get("batch_no", [None])[0],
+                        sample_code=query.get("sample_code", [None])[0],
+                    )
+                    return self._send(200, {"items": items})
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     return self._send(200, service.get(parts[2]))
                 if len(parts) >= 2 and parts[0] == "api":
@@ -107,6 +118,30 @@ def create_handler(service, rules, static_dir):
                 parsed = urlparse(self.path)
                 parts = [part for part in parsed.path.split("/") if part]
                 actor = self._actor()
+                if parts == ["api", "sync"]:
+                    if reconcile is None:
+                        raise NotFoundError("not found")
+                    self._body()
+                    return self._send(200, reconcile.sync(actor))
+                if (
+                    len(parts) == 4
+                    and parts[0] == "api"
+                    and parts[1] == "receipts"
+                    and parts[3] == "retry"
+                ):
+                    if reconcile is None:
+                        raise NotFoundError("not found")
+                    return self._send(200, reconcile.retry_receipt(parts[2], actor))
+                if parts == ["api", "receipts"]:
+                    if reconcile is None:
+                        raise NotFoundError("not found")
+                    body = self._body()
+                    offline = str(body.get("mode", "online")).lower() == "offline"
+                    idem = self.headers.get("Idempotency-Key")
+                    return self._send(
+                        201,
+                        reconcile.ingest_receipt(actor, body, idem, offline=offline),
+                    )
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     body = self._body()
                     action = body.pop("action", None)
@@ -152,6 +187,6 @@ def create_handler(service, rules, static_dir):
     return Handler
 
 
-def create_server(host, port, service, rules, static_dir):
-    handler = create_handler(service, rules, static_dir)
+def create_server(host, port, service, rules, static_dir, reconcile=None):
+    handler = create_handler(service, rules, static_dir, reconcile)
     return ThreadingHTTPServer((host, int(port)), handler)

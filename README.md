@@ -9,6 +9,7 @@
 - `src/rules.py`：状态机、权限、领域计算、冲突和跨对象校验。
 - `src/repository.py`：SQLite建表、查询、事务和乐观锁。
 - `src/service.py`：用例编排、幂等处理、版本控制和审计写入。
+- `src/reconcile.py`：实验室回执对账、去重、挂起/拒绝、重试与离线合并。
 - `src/http_api.py`：HTTP路由、请求解析和统一错误响应。
 - `src/audit.py`：实体操作审计时间线。
 - `static/index.html`：最小演示页面。
@@ -25,6 +26,23 @@ python3 app.py --db ./data.db --port 8305
 ## 核心对象
 
 - `observation`：现场观察；`sample`：样本与实验室结果；`cluster`：异常聚集事件。
+- `lab_order`：送检单，记录某批次（`batch_no`）送往某实验室（`lab_id`）的样本编号清单，是中心台账的对账基准。
+- `receipt`：实验室回执，携带`lab_id`、`batch_no`和逐样本`items`，入库后按台账逐条对账。
+
+## 回执对账
+
+- `POST /api/receipts`：接收回执并立即对账；请求体`{"lab_id","batch_no","items":[{"sample_code","result","result_at"}]}`，支持`Idempotency-Key`请求头。带`"mode":"offline"`时只落本地`outbox`，不触碰样本。
+- `POST /api/receipts/<id>/retry`：重试该回执的待重试条目。
+- `POST /api/sync`：联网后把`outbox`回执合并回中心台账，并重试所有`pending_retry`回执；按批次和样本去重，重复合并不会重复记录。
+- `GET /api/receipt-items`：按`receipt_id`、`batch_no`、`sample_code`、`state`查询对账台账。
+
+对账规则：
+
+- 按`(batch_no, sample_code)`去重，重发的回执记为`duplicate`，不会把一支样本的结果记两遍。
+- 批次无送检单、样本编号不在送检单内或中心台账查不到样本：条目标记`suspended`挂起，不改样本状态。
+- 回执实验室与送检单实验室不一致（越权）：整张回执`rejected`；`lab`角色只能提交本实验室的回执。
+- 条目入库失败（如版本冲突）：标记`pending_retry`留待重试，回执状态为`pending_retry`。
+- 样本结论被回执或复检改变时，引用它的聚集事件先置为`invalidated`，再按区域内阳性样本重算成员：仍满足时空窗口（14天/10公里、≥3例）则回到`confirmed`并更新成员，否则保持失效。
 
 ## 主要接口
 

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from src.http_api import create_server
+from src.reconcile import ReconciliationService
 from src.repository import SQLiteRepository
 from src.rules import RuleEngine
 from src.service import DomainService
@@ -19,8 +20,10 @@ def main(argv=None):
     repository = SQLiteRepository(args.db)
     rules = RuleEngine()
     service = DomainService(repository, rules)
+    reconcile = ReconciliationService(repository, rules)
+    service.sample_result_listeners.append(reconcile.cascade_sample_change)
     static_dir = Path(__file__).resolve().parent / "static"
-    server = create_server(args.host, args.port, service, rules, str(static_dir))
+    server = create_server(args.host, args.port, service, rules, str(static_dir), reconcile)
 
     def stop(signum, frame):
         raise KeyboardInterrupt

@@ -54,6 +54,26 @@ class SQLiteRepository:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(actor_id, idem_key)
                 );
+                CREATE TABLE IF NOT EXISTS receipt_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    receipt_id TEXT NOT NULL,
+                    lab_id TEXT NOT NULL,
+                    batch_no TEXT NOT NULL,
+                    sample_code TEXT NOT NULL,
+                    result TEXT,
+                    result_at TEXT,
+                    state TEXT NOT NULL,
+                    reason TEXT,
+                    sample_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_receipt_items_applied
+                    ON receipt_items(batch_no, sample_code) WHERE state = 'applied';
+                CREATE INDEX IF NOT EXISTS idx_receipt_items_receipt
+                    ON receipt_items(receipt_id, id);
+                CREATE INDEX IF NOT EXISTS idx_receipt_items_state
+                    ON receipt_items(state);
             """)
 
     @staticmethod
@@ -200,3 +220,64 @@ class SQLiteRepository:
         with self._connect() as connection:
             connection.execute("SELECT 1").fetchone()
         return True
+
+    @staticmethod
+    def _receipt_item_from_row(row):
+        return {
+            "id": row["id"],
+            "receipt_id": row["receipt_id"],
+            "lab_id": row["lab_id"],
+            "batch_no": row["batch_no"],
+            "sample_code": row["sample_code"],
+            "result": row["result"],
+            "result_at": row["result_at"],
+            "state": row["state"],
+            "reason": row["reason"],
+            "sample_id": row["sample_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def add_receipt_item(self, receipt_id, lab_id, batch_no, sample_code, result, result_at, state, reason=None, sample_id=None):
+        now = utcnow()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO receipt_items(receipt_id, lab_id, batch_no, sample_code, result, result_at, state, reason, sample_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (receipt_id, lab_id, batch_no, sample_code, result, result_at, state, reason, sample_id, now, now),
+            )
+            return int(cursor.lastrowid)
+
+    def update_receipt_item(self, item_id, state, reason=None, sample_id=None):
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE receipt_items SET state = ?, reason = ?, sample_id = COALESCE(?, sample_id), updated_at = ? "
+                "WHERE id = ?",
+                (state, reason, sample_id, utcnow(), int(item_id)),
+            )
+
+    def list_receipt_items(self, receipt_id=None, state=None, batch_no=None, sample_code=None):
+        clauses = []
+        params = []
+        if receipt_id:
+            clauses.append("receipt_id = ?")
+            params.append(receipt_id)
+        if state:
+            clauses.append("state = ?")
+            params.append(state)
+        if batch_no:
+            clauses.append("batch_no = ?")
+            params.append(batch_no)
+        if sample_code:
+            clauses.append("sample_code = ?")
+            params.append(sample_code)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM receipt_items" + where + " ORDER BY id", params
+            ).fetchall()
+        return [self._receipt_item_from_row(row) for row in rows]
+
+    def find_applied_receipt_item(self, batch_no, sample_code):
+        rows = self.list_receipt_items(state="applied", batch_no=batch_no, sample_code=sample_code)
+        return rows[0] if rows else None

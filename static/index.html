@@ -23,6 +23,11 @@ GET  /api/&lt;kind&gt;
 POST /api/&lt;kind&gt;
 GET  /api/entities/&lt;id&gt;
 POST /api/entities/&lt;id&gt;/actions</pre>
+  <h2>回执对账</h2>
+  <pre>POST /api/receipts            接收回执并对账（"mode":"offline" 时先留本地）
+POST /api/receipts/&lt;id&gt;/retry 重试待重试条目
+POST /api/sync                联网后合并 outbox 并重试失败项
+GET  /api/receipt-items       按批次/样本查询对账台账</pre>
 </main>
 <script>
 async function checkHealth() {
